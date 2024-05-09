@@ -650,5 +650,5 @@ class FiddlerMixtral:
     def run_expert_at_cpu(self, i_layer, i_expert, inps, routing_weights):
         """Run the expert at CPU"""
         return self.model.layers[i_layer].block_sparse_moe.experts[i_expert](
-            inps, routing_weights
+            inps, #routing_weights
         )

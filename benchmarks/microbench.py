@@ -12,6 +12,9 @@ import torch
 sys.path.append("../src")
 from fiddler import FiddlerMixtral
 
+torch.nn.Parameter
+
+@torch.no_grad()
 def weight_copy(model, from_cpu=True):
     """Time to copy weights of an expert"""
     ret_time = []
@@ -22,14 +25,31 @@ def weight_copy(model, from_cpu=True):
         ).to(model.dev)
         for i in range(32):
             model.model.layers[i].block_sparse_moe.experts[0].to("cpu")
+
+            # pin memory
+            for name in ['w1', 'w2', 'w3']:
+                w = getattr(model.model.layers[i].block_sparse_moe.experts[0], name)
+                src_weight_data_tensor = w.weight.data 
+                pinned = src_weight_data_tensor.pin_memory()
+                w.weight.data = pinned
+
             torch.cuda.synchronize()
             tick = time.time()
-            expert_placeholder.load_state_dict(
-                model.model.layers[i].block_sparse_moe.experts[0].state_dict()
-            )
+            
+            # copy ['w1.weight', 'w2.weight', 'w3.weight']
+            for name in ['w1', 'w2', 'w3']:
+                dst = getattr(expert_placeholder, name).weight.data
+                src = getattr(model.model.layers[i].block_sparse_moe.experts[0], name).weight.data
+                dst.copy_(src)
+
+            # expert_placeholder.load_state_dict(
+            #     model.model.layers[i].block_sparse_moe.experts[0].state_dict()
+            # )
+
             torch.cuda.synchronize()
             ret_time.append(time.time() - tick)
             model.model.layers[i].block_sparse_moe.experts[0].to("cpu")
+            
     else:
         expert_placeholder = copy.deepcopy(
             model.model.layers[0].block_sparse_moe.experts[0]
@@ -78,7 +98,7 @@ def expert_gpu(model, n_expert=1, batch_size=1):
     model.model.layers[0].block_sparse_moe.experts[7].to(model.dev)
     inps = torch.randn((batch_size, 4096), dtype=model.dtype, device=model.dev)
     weights = torch.ones((batch_size, 1), dtype=model.dtype, device=model.dev)
-    inps = model.model.layers[0].block_sparse_moe.experts[7](inps, weights)
+    inps = model.model.layers[0].block_sparse_moe.experts[7](inps, )
     model.model.layers[0].block_sparse_moe.experts[7].to("cpu")
     del inps, weights
     torch.cuda.synchronize()
@@ -91,7 +111,7 @@ def expert_gpu(model, n_expert=1, batch_size=1):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             tick = time.time()
-            inps = model.model.layers[i].block_sparse_moe.experts[j](inps, weights)
+            inps = model.model.layers[i].block_sparse_moe.experts[j](inps, )
             torch.cuda.synchronize()
             ret_time.append(time.time() - tick)
             model.model.layers[i].block_sparse_moe.experts[j].to("cpu")
@@ -134,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="mistralai/Mixtral-8x7B-v0.1",
+        default="mistralai/Mixtral-8x7B-Instruct-v0.1",
         help="Model path. default `mistralai/Mixtral-8x7B-v0.1`.",
     )
     parser.add_argument(
@@ -146,6 +166,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    args.beam_width = 1
 
     model = FiddlerMixtral(args)
 
@@ -157,20 +178,22 @@ if __name__ == "__main__":
     print(
         f"\n1) Weight copy, CPU -> GPU\n{format_output(weight_copy(model, from_cpu=True))}"
     )
-    print(
-        f"\n2) Weight copy, GPU -> CPU\n{format_output(weight_copy(model, from_cpu=False))}"
-    )
-    print(
-        f"\n3) Activation copy, CPU -> GPU\n{format_output(copy_activation(model, from_cpu=True))}"
-    )
-    print(
-        f"\n4) Activation copy, GPU -> CPU\n{format_output(copy_activation(model, from_cpu=False))}"
-    )
-    for i in [1, 2, 4, 8, 16, 32]:
+    # print(
+    #     f"\n2) Weight copy, GPU -> CPU\n{format_output(weight_copy(model, from_cpu=False))}"
+    # )
+    # print(
+    #     f"\n3) Activation copy, CPU -> GPU\n{format_output(copy_activation(model, from_cpu=True))}"
+    # )
+    # print(
+    #     f"\n4) Activation copy, GPU -> CPU\n{format_output(copy_activation(model, from_cpu=False))}"
+    # )
+    # for i in [1, 2, 4, 8, 16, 32]:
+    for i in [1, ]:
         print(
             f"\n5) Execution, GPU batch={i}\n{format_output(expert_gpu(model, batch_size=i))}"
         )
-    for i in [1, 2, 4, 8, 16, 32]:
+    # for i in [1, 2, 4, 8, 16, 32]:
+    for i in [1, ]:
         print(
             f"\n6) Execution, CPU batch={i}\n{format_output(expert_cpu(model, batch_size=i))}"
         )
